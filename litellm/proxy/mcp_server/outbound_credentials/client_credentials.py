@@ -205,10 +205,8 @@ class ClientCredentialsTokenSource:
         """Holders and waiters keep this lock alive until the last request leaves."""
         return self._locks.setdefault((server_id, identity_key), asyncio.Lock())
 
-    async def get(
-        self, server_id: str, config: ClientCredentialsConfig, *, profile_id: str | None = None
-    ) -> Result[OAuthToken, CredError]:
-        match _prepare_grant(config, profile_id):
+    async def get(self, server_id: str, config: ClientCredentialsConfig) -> Result[OAuthToken, CredError]:
+        match _prepare_grant(config):
             case Error(err):
                 return Error(err)
             case Ok(grant):
@@ -226,8 +224,6 @@ class ClientCredentialsTokenSource:
         server_id: str,
         config: ClientCredentialsConfig,
         failed_access_token: str,
-        *,
-        profile_id: str | None = None,
     ) -> str | None:
         """Replace a token the upstream just 401'd; returns the fresh bearer value or ``None``.
 
@@ -236,7 +232,7 @@ class ClientCredentialsTokenSource:
         yields one fetch. A failed refetch returns ``None`` and the caller surfaces the
         upstream's original auth error (the contract's retry-once-then-give-up clause).
         """
-        match _prepare_grant(config, profile_id):
+        match _prepare_grant(config):
             case Error(_):
                 return None
             case Ok(grant):
@@ -289,7 +285,7 @@ class ClientCredentialsTokenSource:
         return Ok(token)
 
 
-def _prepare_grant(config: ClientCredentialsConfig, profile_id: str | None) -> Result[_PreparedGrant, CredError]:
+def _prepare_grant(config: ClientCredentialsConfig) -> Result[_PreparedGrant, CredError]:
     if not config.client_id or not config.client_secret or not config.token_url:
         missing: Final = ", ".join(
             name
@@ -323,12 +319,12 @@ def _prepare_grant(config: ClientCredentialsConfig, profile_id: str | None) -> R
             token_url=config.token_url,
             form=form,
             headers=client_auth.headers,
-            identity_key=_identity_key(config, profile_id=profile_id),
+            identity_key=_identity_key(config),
         )
     )
 
 
-def _identity_key(config: ClientCredentialsConfig, *, profile_id: str | None = None) -> str:
+def _identity_key(config: ClientCredentialsConfig) -> str:
     """Hash of everything that names the client identity; any rotation yields a new key."""
     fields: Final = (
         config.token_url or "",
@@ -339,9 +335,9 @@ def _identity_key(config: ClientCredentialsConfig, *, profile_id: str | None = N
         config.audience or "",
         config.upstream_resource or "",
     )
-    if profile_id is None:
+    if config.profile_id is None:
         return hashlib.sha256("\n".join(fields).encode("utf-8")).hexdigest()
-    named_identity: Final = json.dumps((profile_id.lower(), *fields))
+    named_identity: Final = json.dumps((config.profile_id.lower(), *fields))
     return "profile-" + hashlib.sha256(named_identity.encode("utf-8")).hexdigest()
 
 

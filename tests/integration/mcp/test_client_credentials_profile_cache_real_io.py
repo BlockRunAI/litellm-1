@@ -28,6 +28,7 @@ async def test_fresh_sources_share_profile_tokens_and_refresh_only_the_rejected_
         config: Final = ClientCredentialsConfig(
             token_url=issuer.issuer + "/token", client_id="app", client_secret=SecretStr("secret")
         )
+        bot: Final = config.model_copy(update={"profile_id": "bot"})
         shared: Final = RedisCache(host=redis.host, port=redis.port)
 
         def source() -> ClientCredentialsTokenSource:
@@ -37,15 +38,17 @@ async def test_fresh_sources_share_profile_tokens_and_refresh_only_the_rejected_
         try:
             writer: Final = source()
             default: Final = await writer.get("server", config)
-            named: Final = await writer.get("server", config, profile_id="bot")
+            named: Final = await writer.get("server", bot)
             assert isinstance(default, Ok) and isinstance(named, Ok)
             assert default.ok.access_token != named.ok.access_token
-            fresh: Final = await source().refetch("server", config, named.ok.access_token, profile_id="BOT")
+            fresh: Final = await source().refetch(
+                "server", config.model_copy(update={"profile_id": "BOT"}), named.ok.access_token
+            )
             assert fresh and fresh not in (default.ok.access_token, named.ok.access_token)
 
             reader: Final = source()
             for profile, expected in ((None, default.ok.access_token), ("bot", fresh)):
-                result: Final = await reader.get("server", config, profile_id=profile)
+                result: Final = await reader.get("server", config.model_copy(update={"profile_id": profile}))
                 assert isinstance(result, Ok) and result.ok.access_token == expected
             assert len(issuer.token_requests()) == 3
         finally:

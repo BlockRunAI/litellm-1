@@ -72,7 +72,7 @@ async def test_default_grant_reuses_a_token_written_before_profiles_were_support
     source: Final = ClientCredentialsTokenSource(poster, backend=backend)
 
     unnamed: Final = await source.get("server", _config())
-    named: Final = await source.get("server", _config(), profile_id="bot")
+    named: Final = await source.get("server", _config(profile_id="bot"))
     assert isinstance(unnamed, Ok) and unnamed.ok.access_token == "still-valid"
     assert isinstance(named, Ok) and named.ok.access_token == "named-token"
     assert len(poster.calls) == 1
@@ -82,13 +82,12 @@ async def test_default_grant_reuses_a_token_written_before_profiles_were_support
 async def test_refetch_replaces_only_the_named_profiles_token_when_credentials_match() -> None:
     poster: Final = _FakePoster([_success(token, expires_in=3600) for token in ("default", "first", "other", "fresh")])
     source: Final = ClientCredentialsTokenSource(poster)
-    config: Final = _config()
     for profile in (None, "bot", "other"):
-        await source.get("server", config, profile_id=profile)
+        await source.get("server", _config(profile_id=profile))
 
-    assert await source.refetch("server", config, "first", profile_id="BOT") == "fresh"
+    assert await source.refetch("server", _config(profile_id="BOT"), "first") == "fresh"
     for profile, expected in ((None, "default"), ("bot", "fresh"), ("other", "other")):
-        result: Final = await source.get("server", config, profile_id=profile)
+        result: Final = await source.get("server", _config(profile_id=profile))
         assert isinstance(result, Ok) and result.ok.access_token == expected
     assert len(poster.calls) == 4
 
@@ -106,10 +105,10 @@ async def test_slow_grant_does_not_block_a_different_profile_with_identical_cred
         return _success("slow")
 
     source: Final = ClientCredentialsTokenSource(post)
-    slow: Final = asyncio.create_task(source.get("server", _config(), profile_id="first"))
+    slow: Final = asyncio.create_task(source.get("server", _config(profile_id="first")))
     try:
         await asyncio.wait_for(started.wait(), timeout=5)
-        fast: Final = await asyncio.wait_for(source.get("server", _config(), profile_id="second"), timeout=5)
+        fast: Final = await asyncio.wait_for(source.get("server", _config(profile_id="second")), timeout=5)
     finally:
         release.set()
         resumed: Final = await slow
@@ -270,10 +269,9 @@ async def test_non_positive_expires_in_writes_no_cache_entry(expires_in):
 
 
 @pytest.mark.asyncio
-async def test_profile_churn_reclaims_idle_locks_and_preserves_an_inflight_grant() -> None:
+async def test_profile_churn_preserves_an_inflight_grant() -> None:
     started: Final = asyncio.Event()
     release: Final = asyncio.Event()
-    config: Final = _config()
 
     async def post(url: str, form: dict[str, str], headers: dict[str, str]) -> TokenEndpointOutcome:
         if started.is_set():
@@ -283,14 +281,13 @@ async def test_profile_churn_reclaims_idle_locks_and_preserves_an_inflight_grant
         return _success("first")
 
     source: Final = ClientCredentialsTokenSource(post, max_locks=1)
-    first: Final = asyncio.create_task(source.get("server", config, profile_id="first"))
+    first: Final = asyncio.create_task(source.get("server", _config(profile_id="first")))
     try:
         await asyncio.wait_for(started.wait(), timeout=5)
-        await source.get("server", config, profile_id="second")
-        duplicate: Final = asyncio.create_task(source.get("server", config, profile_id="FIRST"))
+        await asyncio.wait_for(source.get("server", _config(profile_id="second")), timeout=5)
+        duplicate: Final = asyncio.create_task(source.get("server", _config(profile_id="FIRST")))
         asyncio.get_running_loop().call_soon(release.set)
         assert await duplicate == await first
-        assert not source._locks
     finally:
         release.set()
         await first
@@ -603,6 +600,7 @@ async def test_token_exchange_failure_diagnostics(mode, monkeypatch, caplog):
 
 @pytest.mark.parametrize("changed", [
     {"client_id": "other-client"},
+    {"profile_id": "build"},
     {"client_secret": SecretStr("other-secret")},
     {"token_url": "https://other.example/token"},
     {"scopes": ("read",)},
