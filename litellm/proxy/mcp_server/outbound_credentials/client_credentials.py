@@ -33,6 +33,7 @@ import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Generator
 from dataclasses import dataclass
 from typing import Annotated, Final, Literal
+from weakref import WeakValueDictionary
 
 import httpx
 import httpx2
@@ -188,7 +189,6 @@ class ClientCredentialsTokenSource:
         default_ttl_seconds: float = 300.0,
         expiry_skew_seconds: float = 60.0,
         min_cache_seconds: float = 10.0,
-        max_locks: int = 1024,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._post = post
@@ -196,20 +196,12 @@ class ClientCredentialsTokenSource:
         self._default_ttl_seconds = default_ttl_seconds
         self._expiry_skew_seconds = expiry_skew_seconds
         self._min_cache_seconds = min_cache_seconds
-        self._max_locks = max_locks
         self._clock = clock
-        self._locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._locks: Final[WeakValueDictionary[tuple[str, str], asyncio.Lock]] = WeakValueDictionary()
 
     def _lock(self, server_id: str, identity_key: str) -> asyncio.Lock:
-        """Per-token single-flight lock, bounded so ephemeral server ids (e.g. the REST tools
-        preview mints a fresh id per call) cannot grow the dict for the life of the process.
-        Evicting the oldest entry while a task still holds it only means a concurrent caller for
-        that server may run its own grant — single-flight is an optimization, not correctness.
-        """
-        key: Final = (server_id, identity_key)
-        if key not in self._locks and len(self._locks) >= self._max_locks:
-            self._locks.pop(next(iter(self._locks)), None)
-        return self._locks.setdefault(key, asyncio.Lock())
+        """Holders and waiters keep this lock alive until the last request leaves."""
+        return self._locks.setdefault((server_id, identity_key), asyncio.Lock())
 
     async def get(
         self, server_id: str, config: ClientCredentialsConfig, *, profile_id: str | None = None
@@ -336,20 +328,18 @@ def _prepare_grant(config: ClientCredentialsConfig, profile_id: str | None) -> R
 
 def _identity_key(config: ClientCredentialsConfig, *, profile_id: str | None = None) -> str:
     """Hash of everything that names the client identity; any rotation yields a new key."""
-    material: Final = "\n".join(
-        (
-            config.token_url or "",
-            config.client_id or "",
-            config.client_secret.get_secret_value() if config.client_secret else "",
-            config.token_endpoint_auth_method or "",
-            " ".join(config.scopes),
-            config.audience or "",
-            config.upstream_resource or "",
-        )
+    fields: Final = (
+        config.token_url or "",
+        config.client_id or "",
+        config.client_secret.get_secret_value() if config.client_secret else "",
+        config.token_endpoint_auth_method or "",
+        " ".join(config.scopes),
+        config.audience or "",
+        config.upstream_resource or "",
     )
     if profile_id is None:
-        return hashlib.sha256(material.encode("utf-8")).hexdigest()
-    named_identity: Final = json.dumps((profile_id.lower(), material))
+        return hashlib.sha256("\n".join(fields).encode("utf-8")).hexdigest()
+    named_identity: Final = json.dumps((profile_id.lower(), *fields))
     return "profile-" + hashlib.sha256(named_identity.encode("utf-8")).hexdigest()
 
 

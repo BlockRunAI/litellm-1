@@ -270,13 +270,31 @@ async def test_non_positive_expires_in_writes_no_cache_entry(expires_in):
 
 
 @pytest.mark.asyncio
-async def test_lock_dict_is_bounded_for_ephemeral_server_ids():
-    poster = _FakePoster([_success()])
-    source = ClientCredentialsTokenSource(poster, max_locks=8)
-    for index in range(20):
-        result = await source.get(f"ephemeral-{index}", _config())
-        assert isinstance(result, Ok)
-    assert len(source._locks) <= 8
+async def test_profile_churn_reclaims_idle_locks_and_preserves_an_inflight_grant() -> None:
+    started: Final = asyncio.Event()
+    release: Final = asyncio.Event()
+    config: Final = _config()
+
+    async def post(url: str, form: dict[str, str], headers: dict[str, str]) -> TokenEndpointOutcome:
+        if started.is_set():
+            return _success("other")
+        started.set()
+        await release.wait()
+        return _success("first")
+
+    source: Final = ClientCredentialsTokenSource(post)
+    first: Final = asyncio.create_task(source.get("server", config, profile_id="first"))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        for index in range(1024):
+            await source.get("server", config, profile_id=str(index))
+        duplicate: Final = asyncio.create_task(source.get("server", config, profile_id="FIRST"))
+        asyncio.get_running_loop().call_soon(release.set)
+        assert await duplicate == await first
+        assert not source._locks
+    finally:
+        release.set()
+        await first
 
 
 @pytest.mark.asyncio
