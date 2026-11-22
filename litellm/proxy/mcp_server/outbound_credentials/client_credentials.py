@@ -15,8 +15,7 @@ Implements the client-credentials behavior contract for the v2 resolver:
 - **401 recovery**: ``ClientCredentialsBearerAuth`` retries an upstream request exactly once
   after a 401 — discard the cached token, mint a fresh one, resend; a second failure surfaces
   the upstream's own auth error unchanged.
-- **No user context**: nothing here reads a ``Subject``; every caller shares the one client
-  identity.
+- **No user context**: callers selecting the same profile share its client identity.
 
 The token-endpoint POST is injected (``M2MTokenEndpointPost``) so the grant orchestration is
 testable without a live IdP; ``post_client_credentials_grant`` is the httpx edge. Failures are
@@ -276,7 +275,7 @@ class ClientCredentialsTokenSource:
         )
         # The min-cache floor is itself capped at the token's real lifetime, so a token whose
         # expires_in is below the skew is never served past its actual expiry; a non-positive
-        # expires_in caches nothing (every request re-fetches, serialized by the per-server lock).
+        # expires_in caches nothing (every request re-fetches under the token's lock).
         ttl: Final = (
             max(expires_in - self._expiry_skew_seconds, min(float(expires_in), self._min_cache_seconds), 0.0)
             if expires_in is not None
