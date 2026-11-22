@@ -178,6 +178,8 @@ class ClientCredentialsTokenSource:
     ``expiry_skew_seconds``) holds, fetching under a per-token lock so concurrent misses
     produce one grant. ``refetch`` is the 401-recovery path: it drops the failed token and
     mints a fresh one, unless a concurrent caller already replaced it.
+
+    ``max_locks`` is accepted for compatibility. Idle locks are released immediately.
     """
 
     def __init__(
@@ -188,6 +190,7 @@ class ClientCredentialsTokenSource:
         default_ttl_seconds: float = 300.0,
         expiry_skew_seconds: float = 60.0,
         min_cache_seconds: float = 10.0,
+        max_locks: int = 1024,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._post = post

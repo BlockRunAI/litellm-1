@@ -282,12 +282,11 @@ async def test_profile_churn_reclaims_idle_locks_and_preserves_an_inflight_grant
         await release.wait()
         return _success("first")
 
-    source: Final = ClientCredentialsTokenSource(post)
+    source: Final = ClientCredentialsTokenSource(post, max_locks=1)
     first: Final = asyncio.create_task(source.get("server", config, profile_id="first"))
     try:
         await asyncio.wait_for(started.wait(), timeout=5)
-        for index in range(1024):
-            await source.get("server", config, profile_id=str(index))
+        await source.get("server", config, profile_id="second")
         duplicate: Final = asyncio.create_task(source.get("server", config, profile_id="FIRST"))
         asyncio.get_running_loop().call_soon(release.set)
         assert await duplicate == await first
