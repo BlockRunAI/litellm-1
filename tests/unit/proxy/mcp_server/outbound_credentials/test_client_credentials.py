@@ -5,6 +5,9 @@ rotation-aware cache keying, expires_in-driven expiry, error classification, and
 401 -> discard -> refetch -> retry-once recovery in ``ClientCredentialsBearerAuth``.
 """
 
+import asyncio
+from typing import Final
+
 import httpx
 import httpx2
 import pytest
@@ -18,6 +21,7 @@ from litellm.proxy.mcp_server.outbound_credentials.client_credentials import (
     TokenEndpointSuccess,
     TokenEndpointUnreachable,
 )
+from litellm.proxy.mcp_server.outbound_credentials.oauth_token_store import InMemoryTokenCacheBackend, OAuthToken
 from litellm.proxy.mcp_server.outbound_credentials.result import Error, Ok
 from litellm.proxy.mcp_server.outbound_credentials.types import (
     ClientCredentialsConfig,
@@ -57,6 +61,60 @@ def _config(**overrides: object) -> ClientCredentialsConfig:
         **overrides,
     }
     return ClientCredentialsConfig.model_validate(fields)
+
+
+@pytest.mark.asyncio
+async def test_default_grant_reuses_a_token_written_before_profiles_were_supported() -> None:
+    backend: Final = InMemoryTokenCacheBackend()
+    legacy_identity: Final = "f94bc70c267d12b2d5629a47df9aa834af605e299519b38a0919a4b908286597"
+    await backend.set(legacy_identity, "server", OAuthToken(access_token="still-valid"), 300)
+    poster: Final = _FakePoster([_success("named-token")])
+    source: Final = ClientCredentialsTokenSource(poster, backend=backend)
+
+    unnamed: Final = await source.get("server", _config())
+    named: Final = await source.get("server", _config(), profile_id="bot")
+    assert isinstance(unnamed, Ok) and unnamed.ok.access_token == "still-valid"
+    assert isinstance(named, Ok) and named.ok.access_token == "named-token"
+    assert len(poster.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_refetch_replaces_only_the_named_profiles_token_when_credentials_match() -> None:
+    poster: Final = _FakePoster([_success(token, expires_in=3600) for token in ("default", "first", "other", "fresh")])
+    source: Final = ClientCredentialsTokenSource(poster)
+    config: Final = _config()
+    for profile in (None, "bot", "other"):
+        await source.get("server", config, profile_id=profile)
+
+    assert await source.refetch("server", config, "first", profile_id="BOT") == "fresh"
+    for profile, expected in ((None, "default"), ("bot", "fresh"), ("other", "other")):
+        result: Final = await source.get("server", config, profile_id=profile)
+        assert isinstance(result, Ok) and result.ok.access_token == expected
+    assert len(poster.calls) == 4
+
+
+@pytest.mark.asyncio
+async def test_slow_grant_does_not_block_a_different_profile_with_identical_credentials() -> None:
+    started: Final = asyncio.Event()
+    release: Final = asyncio.Event()
+
+    async def post(url: str, form: dict[str, str], headers: dict[str, str]) -> TokenEndpointOutcome:
+        if started.is_set():
+            return _success("fast")
+        started.set()
+        await release.wait()
+        return _success("slow")
+
+    source: Final = ClientCredentialsTokenSource(post)
+    slow: Final = asyncio.create_task(source.get("server", _config(), profile_id="first"))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        fast: Final = await asyncio.wait_for(source.get("server", _config(), profile_id="second"), timeout=5)
+    finally:
+        release.set()
+        resumed: Final = await slow
+    assert isinstance(fast, Ok) and fast.ok.access_token == "fast"
+    assert isinstance(resumed, Ok) and resumed.ok.access_token == "slow"
 
 
 @pytest.mark.asyncio
