@@ -59,6 +59,43 @@ impl Bag {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Lists(pub Vec<(String, Vec<String>)>);
 
+/// A server-to-profile map in Python insertion order. Python omits this field when empty.
+#[derive(Clone, Default, PartialEq, Eq, veil::Redact)]
+pub struct ProfileGrants(#[redact(with = "[REDACTED]")] Vec<(String, String)>);
+
+impl Field for ProfileGrants {
+    fn read(value: &Value) -> Option<Self> {
+        match value {
+            Value::None => Some(Self::default()),
+            Value::Dict(entries) => entries
+                .iter()
+                .map(|(server, profile)| Some((String::read(server)?, String::read(profile)?)))
+                .collect::<Option<_>>()
+                .map(Self),
+            _ => None,
+        }
+    }
+
+    fn write(self) -> Value {
+        Value::Dict(
+            self.0
+                .into_iter()
+                .map(|(k, v)| (k.write(), v.write()))
+                .collect(),
+        )
+    }
+
+    fn entry(self, name: &'static str) -> Option<(String, Value)> {
+        (!self.0.is_empty()).then(|| (name.to_owned(), self.write()))
+    }
+}
+
+impl FromValue for ProfileGrants {
+    fn from_value(value: &Value) -> Result<Self, DecodeError> {
+        Self::read(value).ok_or(DecodeError::Shape("a dict of profile names"))
+    }
+}
+
 /// The two roles `Member` takes.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, strum::EnumString, strum::IntoStaticStr, strum::VariantArray,
@@ -75,6 +112,10 @@ pub enum MemberRole {
 trait Field: Sized {
     fn read(value: &Value) -> Option<Self>;
     fn write(self) -> Value;
+
+    fn entry(self, name: &'static str) -> Option<(String, Value)> {
+        Some((name.to_owned(), self.write()))
+    }
 }
 
 impl Field for Value {
@@ -322,8 +363,9 @@ macro_rules! record {
         impl IntoValue for $name {
             fn into_value(self) -> Value {
                 Value::Dict(
-                    [$((stringify!($field).to_owned(), Field::write(self.$field)),)+]
+                    [$(Field::entry(self.$field, stringify!($field)),)+]
                         .into_iter()
+                        .flatten()
                         .chain(self.unread)
                         .map(|(name, value)| (Value::Str(name), value))
                         .collect(),
@@ -377,6 +419,7 @@ record! {
         mcp_tool_search_enabled: Option<bool>,
         skills: Option<Vec<String>>,
         apps: Option<Vec<String>>,
+        mcp_auth_profiles: ProfileGrants,
     }
 }
 
@@ -630,6 +673,10 @@ mod tests {
         r#"{"object_permission": {"models": []}}"#,
         "object_permission"
     )]
+    #[case::a_profile_grant_that_is_not_text(
+        r#"{"object_permission": {"object_permission_id": "p", "mcp_auth_profiles": {"s": 1}}}"#,
+        "object_permission"
+    )]
     fn an_entry_the_model_would_refuse_does_not_decode(#[case] entry: &str, #[case] field: &str) {
         assert!(
             matches!(key(entry), Err(DecodeError::Shape(refused)) if refused == field),
@@ -654,6 +701,7 @@ mod tests {
             r#"{"token": "hashed", "metadata": {"api_key": "credential-value"}, "#,
             r#""team_member": {"user_id": "u", "role": "user", "note": "credential-value"}, "#,
             r#""router_settings": {"redis_password": "credential-value"}, "budget_limits": [{"k": "credential-value"}], "#,
+            r#""object_permission": {"object_permission_id": "p", "mcp_auth_profiles": {"s": "credential-value"}}, "#,
             r#""later_field": "credential-value"}"#,
         ))
         .unwrap();

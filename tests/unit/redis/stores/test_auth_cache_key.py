@@ -114,7 +114,8 @@ TEAM_ENTRY: Final = (
     r' "mcp_access_groups": [], "mcp_tool_permissions": {"server-a": ["search"]},'
     r' "vector_stores": ["store-a"], "agents": [], "agent_access_groups": [], "models": [],'
     r' "mcp_toolsets": [], "blocked_tools": [], "search_tools": [], "mcp_tool_search_enabled": null,'
-    r' "skills": [], "apps": null}, "access_group_ids": [], "rotation_count": 0, "auto_rotate": false,'
+    r' "skills": [], "apps": null, "mcp_auth_profiles": {"server-a": "Build"}},'
+    r' "access_group_ids": [], "rotation_count": 0, "auto_rotate": false,'
     r' "rotation_interval": null, "last_rotation_at": null, "key_rotation_at": null,'
     r' "router_settings": null, "budget_limits": null, "team_spend": 2.25, "team_alias": "Team KV",'
     r' "team_tpm_limit": null, "team_rpm_limit": null, "team_tpd_limit": null, "team_max_budget": 12.0,'
@@ -139,13 +140,14 @@ PERMISSION_ROW: Final = (
     r'{"object_permission_id":"kv-permission","mcp_servers":["server-a"],"mcp_access_groups":[],'
     r'"mcp_tool_permissions":{"server-a": ["search"]},"vector_stores":["store-a"],"agents":[],'
     r'"agent_access_groups":[],"models":[],"blocked_tools":[],"mcp_toolsets":[],"search_tools":[],'
-    r'"mcp_tool_search_enabled":null,"skills":[]}'
+    r'"mcp_tool_search_enabled":null,"skills":[],"mcp_auth_profiles":{"server-a": "Build"}}'
 )
 PERMISSION_ENTRY: Final = (
     r'{"object_permission_id": "kv-permission", "mcp_servers": ["server-a"], "mcp_access_groups": [],'
     r' "mcp_tool_permissions": {"server-a": ["search"]}, "vector_stores": ["store-a"], "agents": [],'
     r' "agent_access_groups": [], "models": [], "mcp_toolsets": [], "blocked_tools": [],'
-    r' "search_tools": [], "mcp_tool_search_enabled": null, "skills": [], "apps": null}'
+    r' "search_tools": [], "mcp_tool_search_enabled": null, "skills": [], "apps": null,'
+    r' "mcp_auth_profiles": {"server-a": "Build"}}'
 )
 FULL_ROW: Final = (
     r'{"token":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","key_name":"sk-...full",'

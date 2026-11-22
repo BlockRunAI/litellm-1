@@ -2,6 +2,7 @@
 Tests for backend domain models.
 """
 
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Final
 
@@ -187,6 +188,25 @@ class TestModel:
 
 
 class TestObjectPermission:
+    @pytest.mark.parametrize("grants", [None, {}], ids=["null", "empty"])
+    def test_empty_profile_grants_leave_existing_permission_fields_intact(
+        self, grants: Mapping[str, str] | None
+    ) -> None:
+        permission: Final = LiteLLM_ObjectPermissionTable(
+            object_permission_id="perm",
+            skills=["build"],
+            apps=["work"],
+            mcp_tool_search_enabled=False,
+            mcp_auth_profiles=grants,
+        )
+
+        assert permission.model_dump(exclude_unset=True) == {
+            "object_permission_id": "perm",
+            "skills": ["build"],
+            "apps": ["work"],
+            "mcp_tool_search_enabled": False,
+        }
+
     def test_object_permission_creation(self):
         perm = LiteLLM_ObjectPermissionTable(
             object_permission_id="test-perm-id",
