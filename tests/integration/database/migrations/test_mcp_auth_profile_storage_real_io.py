@@ -1,12 +1,11 @@
 import os
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 from typing import Final
 
 import psycopg
-from integration._support.database import scratch_database
+from litellm_proxy_extras.prisma_toolchain import prisma_migrate_deploy_timeout, run_prisma
 
 MIGRATION: Final = (
     Path(__file__).resolve().parents[4]
@@ -25,25 +24,23 @@ def test_profile_migration_preserves_existing_rows_and_accepts_legacy_inserts(tm
         if item.is_dir() and item.name < MIGRATION.parent.name:
             shutil.copytree(item, previous / item.name)
 
-    with scratch_database() as url, psycopg.connect(url) as connection:
-        subprocess.run(
-            [sys.executable, "-I", "-m", "prisma", "migrate", "deploy", "--schema", str(schema)],
-            env={**os.environ, "DATABASE_URL": url},
-            check=True,
-            timeout=300,
-        )
+    deploy: Final = (sys.executable, "-I", "-m", "prisma", "migrate", "deploy", "--schema", str(schema))
+    run_prisma(deploy, env=os.environ, timeout=prisma_migrate_deploy_timeout())
+    with psycopg.connect(os.environ["DATABASE_URL"], autocommit=True) as connection:
         connection.execute("INSERT INTO \"LiteLLM_MCPServerTable\" (server_id) VALUES ('original')")
         connection.execute("INSERT INTO \"LiteLLM_ObjectPermissionTable\" (object_permission_id) VALUES ('original')")
 
-        connection.execute(MIGRATION.read_text())
+        shutil.copytree(MIGRATION.parent, previous / MIGRATION.parent.name)
+        run_prisma(deploy, env=os.environ, timeout=prisma_migrate_deploy_timeout())
         connection.execute("INSERT INTO \"LiteLLM_MCPServerTable\" (server_id) VALUES ('later')")
         connection.execute("INSERT INTO \"LiteLLM_ObjectPermissionTable\" (object_permission_id) VALUES ('later')")
 
         servers: Final = connection.execute(
-            'SELECT server_id, additional_auth, pg_typeof(additional_auth)::text FROM "LiteLLM_MCPServerTable" ORDER BY 1'
+            "SELECT server_id, additional_auth IS NULL, pg_typeof(additional_auth)::text "
+            'FROM "LiteLLM_MCPServerTable" ORDER BY 1'
         ).fetchall()
         permissions: Final = connection.execute(
-            "SELECT object_permission_id, mcp_auth_profiles, pg_typeof(mcp_auth_profiles)::text "
+            "SELECT object_permission_id, mcp_auth_profiles IS NULL, pg_typeof(mcp_auth_profiles)::text "
             'FROM "LiteLLM_ObjectPermissionTable" ORDER BY 1'
         ).fetchall()
-        assert servers == permissions == [("later", None, "jsonb"), ("original", None, "jsonb")]
+        assert servers == permissions == [("later", True, "jsonb"), ("original", True, "jsonb")]
