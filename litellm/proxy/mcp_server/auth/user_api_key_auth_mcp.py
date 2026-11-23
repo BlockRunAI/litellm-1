@@ -94,6 +94,7 @@ from litellm.repositories.table_repositories import (
     MCPServerRepository,
 )
 from litellm.rust_bridge._native import RustAuth, RustAuthSettings
+from litellm.types.mcp_server.auth_profile_grants import UnreadableGrants
 from litellm.types.mcp_server.mcp_server_manager import MCPServer
 from litellm.types.proxy.auth.auth_checks import UserNotFoundError
 
@@ -2923,6 +2924,11 @@ class MCPRequestHandler:
         Note: object_permission is automatically populated when the team is fetched via
         get_team_object() in litellm/proxy/auth/auth_checks.py
         """
+        team: Final = await MCPRequestHandler.permission_team(user_api_key_auth)
+        return team.object_permission if team is not None else None
+
+    @staticmethod
+    async def permission_team(user_api_key_auth: UserAPIKeyAuth | None) -> LiteLLM_TeamTable | None:
         from litellm.proxy.auth.auth_checks import get_team_object
         from litellm.proxy.proxy_server import (
             prisma_client,
@@ -2940,7 +2946,7 @@ class MCPRequestHandler:
             return None
 
         # Get the team object (which has object_permission already loaded)
-        team_obj: Final[LiteLLM_TeamTable | None] = await get_team_object(
+        return await get_team_object(
             team_id=user_api_key_auth.team_id,
             prisma_client=prisma_client,
             user_api_key_cache=user_api_key_cache,
@@ -2948,11 +2954,6 @@ class MCPRequestHandler:
             proxy_logging_obj=proxy_logging_obj,
             check_db_only=bool(user_api_key_auth and user_api_key_auth.requires_fresh_policy),
         )
-
-        if not team_obj:
-            return None
-
-        return team_obj.object_permission
 
     @staticmethod
     async def _toolset_tool_permissions(
@@ -4447,13 +4448,14 @@ class MCPRequestHandler:
 
     @staticmethod
     @with_service_target(AUTH_OBJECTS_TARGET)
-    async def _agent_object_permission_id(agent_id: str, prisma_client: "PrismaClient") -> str | None:
+    async def _agent_object_permission_id(
+        agent_id: str, prisma_client: "PrismaClient"
+    ) -> str | None | UnreadableGrants:
         """The permission row this agent's row links to, or ``None`` when it links none.
 
         Caches the link (with a sentinel for "links none") so an agent without an entitlement costs
-        no DB read per MCP request. A read that fails also answers ``None``: not knowing whether the
-        agent is entitled is the state that existed before this level, so it places no ceiling. Only
-        a link we DID resolve can make the caller deny."""
+        no DB read per MCP request. A failed lookup must be distinguishable from an absent link
+        when choosing an upstream credential."""
         from litellm.proxy.proxy_server import user_api_key_cache
 
         cache_key: Final = AuthObject.agent_object_permission(agent_id)
@@ -4474,7 +4476,7 @@ class MCPRequestHandler:
             return object_permission_id
         except Exception as e:  # noqa: BLE001  # entitlement unknown, not known-absent: no ceiling, as before this level
             verbose_logger.warning("Failed to resolve object_permission_id for agent %r: %s", agent_id, e)
-            return None
+            return UnreadableGrants()
 
     @staticmethod
     async def _get_agent_object_permission(
@@ -4490,6 +4492,33 @@ class MCPRequestHandler:
         no permission. An agent that LINKS one we cannot load raises ``UnloadableEntitlementError``,
         since a known entitlement with unknown contents must deny rather than read as unrestricted.
         """
+        permission: Final = await MCPRequestHandler._agent_permission(user_api_key_auth)
+        return None if isinstance(permission, UnreadableGrants) else permission
+
+    @staticmethod
+    async def agent_permission_for_grants(
+        caller: UserAPIKeyAuth,
+    ) -> LiteLLM_ObjectPermissionTable | None | UnreadableGrants:
+        from litellm.proxy.proxy_server import prisma_client
+
+        row: Final = await MCPRequestHandler._agent_permission(caller)
+        if not isinstance(row, LiteLLM_ObjectPermissionTable) or managed_agent_policy(caller) is None:
+            return row
+        if "mcp_auth_profiles" in row.model_fields_set:
+            return row
+        if prisma_client is None:
+            return UnreadableGrants()
+        return await MCPRequestHandler._load_named_object_permission(
+            principal=f"agent {caller.agent_id!r}",
+            object_permission_id=row.object_permission_id,
+            prisma_client=prisma_client,
+            user_api_key_auth=caller,
+        )
+
+    @staticmethod
+    async def _agent_permission(
+        user_api_key_auth: UserAPIKeyAuth | None,
+    ) -> LiteLLM_ObjectPermissionTable | None | UnreadableGrants:
         from litellm.proxy.proxy_server import prisma_client
 
         if not user_api_key_auth or not user_api_key_auth.agent_id:
@@ -4501,17 +4530,15 @@ class MCPRequestHandler:
             return LiteLLM_ObjectPermissionTable.model_validate(permission) if permission is not None else None
 
         if prisma_client is None:
-            verbose_logger.debug("prisma_client is None")
             return None
 
         agent_id: Final = user_api_key_auth.agent_id
-        object_permission_id: Final = await MCPRequestHandler._agent_object_permission_id(agent_id, prisma_client)
-        if object_permission_id is None:
-            return None
-
+        link: Final = await MCPRequestHandler._agent_object_permission_id(agent_id, prisma_client)
+        if link is None or isinstance(link, UnreadableGrants):
+            return link
         return await MCPRequestHandler._load_named_object_permission(
             principal=f"agent {agent_id!r}",
-            object_permission_id=object_permission_id,
+            object_permission_id=link,
             prisma_client=prisma_client,
             user_api_key_auth=user_api_key_auth,
         )
